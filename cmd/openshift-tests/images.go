@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -49,8 +52,8 @@ const defaultTestImageMirrorLocation = "quay.io/openshift/community-e2e-images"
 func createImageMirrorForInternalImages(prefix string, ref reference.DockerImageReference, mirrored bool) ([]string, error) {
 	source := ref.Exact()
 
-	defaults := k8simage.GetOriginalImageConfigs()
-	updated := k8simage.GetMappedImageConfigs(defaults, ref.Exact())
+	defaults := k8simage.GetImageConfigs()
+	updated := GetMappedImageConfigs(defaults, ref.Exact())
 
 	openshiftDefaults := image.OriginalImages()
 	openshiftUpdated := image.GetMappedImages(openshiftDefaults, defaultTestImageMirrorLocation)
@@ -81,10 +84,12 @@ func createImageMirrorForInternalImages(prefix string, ref reference.DockerImage
 			if len(e2eRef.Tag) == 0 {
 				return nil, fmt.Errorf("invalid test image: %s: no tag", pullSpec)
 			}
-			config.SetRegistry(baseRef.Registry)
-			config.SetName(baseRef.RepositoryName())
-			config.SetVersion(e2eRef.Tag)
-			defaults[i] = config
+			toAdd := &k8simage.Config{}
+			toAdd.SetRegistry(baseRef.Registry)
+			toAdd.SetName(baseRef.RepositoryName())
+			toAdd.SetVersion(e2eRef.Tag)
+
+			defaults[i] = *toAdd
 		}
 
 		// calculate the mapping for openshift images by populating openshiftUpdated
@@ -143,7 +148,7 @@ func verifyImages() error {
 }
 
 func verifyImagesWithoutEnv() error {
-	defaults := k8simage.GetOriginalImageConfigs()
+	defaults := k8simage.GetImageConfigs()
 
 	for originalPullSpec, index := range image.OriginalImages() {
 		if index == -1 {
@@ -169,7 +174,8 @@ func verifyImagesWithoutEnv() error {
 // pulledInvalidImages returns a function that checks whether the cluster pulled an image that is
 // outside the allowed list of images. The list is defined as a set of static test case images, the
 // local cluster registry, any repository referenced by the image streams in the cluster's 'openshift'
-// namespace, or the location that input images are cloned from.
+// namespace, or the location that input images are cloned from. Only namespaces prefixed with 'e2e-'
+// are checked.
 func pulledInvalidImages(fromRepository string) func(events monitor.EventIntervals) ([]*ginkgo.JUnitTestCase, bool) {
 	// static allowed images
 	allowedImages := sets.NewString("image/webserver:404")
@@ -179,13 +185,20 @@ func pulledInvalidImages(fromRepository string) func(events monitor.EventInterva
 		"gcr.io/authenticated-image-pulling/",
 		"invalid.com/",
 
-		// used by the CI infrastructure, eventually should be created as an image stream tag in
-		// openshift so that it is automatically excluded
-		"grafana/loki",
-		"grafana/promtail",
-		// this is used by an operator hub test and is not replaced today (in the future OLM should
-		// use image streams to reference these and we can exclude those that match)
-		"quay.io/helmoperators/cockroachdb",
+		// installed alongside OLM and managed externally
+		"registry.redhat.io/redhat/community-operator-index",
+		"registry.redhat.io/redhat/certified-operator-index",
+		"registry.redhat.io/redhat/redhat-marketplace-index",
+		"registry.redhat.io/redhat/redhat-operator-index",
+
+		// used by OLM tests
+		"registry.redhat.io/amq7/amq-streams-rhel7-operator",
+		"registry.redhat.io/amq7/amqstreams-rhel7-operator-metadata",
+
+		// used to test pull secrets against an authenticated registry
+		// TODO: will not work for a disconnected test environment and should be emulated by launching
+		//   an authenticated registry in a pod on cluster
+		"registry.redhat.io/rhscl/nodejs-10-rhel7:latest",
 	)
 	if len(fromRepository) > 0 {
 		allowedPrefixes.Insert(fromRepository)
@@ -207,9 +220,15 @@ func pulledInvalidImages(fromRepository string) func(events monitor.EventInterva
 
 		pulls := make(map[string]sets.String)
 		for _, event := range events {
+			// only messages that include a Pulled reason
 			if !strings.Contains(event.Message, " reason/Pulled ") {
 				continue
 			}
+			// only look at pull events from an e2e-* namespace
+			if !strings.Contains(event.Locator, " ns/e2e-") {
+				continue
+			}
+
 			parts := strings.Split(event.Message, " ")
 			if len(parts) == 0 {
 				continue
@@ -309,4 +328,66 @@ func imagePrefixesFromNamespaceImageStreams(ns string) (sets.String, error) {
 		}
 	}
 	return allowedPrefixes, nil
+}
+
+var (
+	reCharSafe = regexp.MustCompile(`[^\w]`)
+	reDashes   = regexp.MustCompile(`-+`)
+)
+
+// GetMappedImageConfigs returns the images if they were mapped to the provided
+// image repository.
+func GetMappedImageConfigs(originalImageConfigs map[int]k8simage.Config, repo string) map[int]k8simage.Config {
+	configs := make(map[int]k8simage.Config)
+	for i, config := range originalImageConfigs {
+		switch i {
+		case k8simage.InvalidRegistryImage, k8simage.AuthenticatedAlpine,
+			k8simage.AuthenticatedWindowsNanoServer, k8simage.AgnhostPrivate:
+			// These images are special and can't be run out of the cloud - some because they
+			// are authenticated, and others because they are not real images. Tests that depend
+			// on these images can't be run without access to the public internet.
+			configs[i] = config
+			continue
+		}
+
+		// Build a new tag with a the index, a hash of the image spec (to be unique) and
+		// shorten and make the pull spec "safe" so it will fit in the tag
+		configs[i] = getRepositoryMappedConfig(i, config, repo)
+	}
+	return configs
+}
+
+// getRepositoryMappedConfig maps an existing image to the provided repo, generating a
+// tag that is unique with the input config. The tag will contain the index, a hash of
+// the image spec (to be unique) and shorten and make the pull spec "safe" so it will
+// fit in the tag to allow a human to recognize the value. If index is -1, then no
+// index will be added to the tag.
+func getRepositoryMappedConfig(index int, config k8simage.Config, repo string) k8simage.Config {
+	parts := strings.SplitN(repo, "/", 2)
+	registry, name := parts[0], parts[1]
+
+	pullSpec := config.GetE2EImage()
+
+	h := sha256.New()
+	h.Write([]byte(pullSpec))
+	hash := base64.RawURLEncoding.EncodeToString(h.Sum(nil)[:16])
+
+	shortName := reCharSafe.ReplaceAllLiteralString(pullSpec, "-")
+	shortName = reDashes.ReplaceAllLiteralString(shortName, "-")
+	maxLength := 127 - 16 - 6 - 10
+	if len(shortName) > maxLength {
+		shortName = shortName[len(shortName)-maxLength:]
+	}
+	var version string
+	if index == -1 {
+		version = fmt.Sprintf("e2e-%s-%s", shortName, hash)
+	} else {
+		version = fmt.Sprintf("e2e-%d-%s-%s", index, shortName, hash)
+	}
+
+	res := &k8simage.Config{}
+	res.SetName(name)
+	res.SetRegistry(registry)
+	res.SetVersion(version)
+	return *res
 }

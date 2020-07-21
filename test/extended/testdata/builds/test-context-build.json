@@ -40,7 +40,7 @@
         "source": {
           "type": "Git",
           "git": {
-            "uri":"https://github.com/sclorg/s2i-ruby-container"
+            "uri": "https://github.com/sclorg/s2i-ruby-container"
           },
           "contextDir": "2.7/test/puma-test-app"
         },
@@ -98,7 +98,7 @@
         ],
         "replicas": 1,
         "selector": {
-          "name":"frontend"
+          "name": "frontend"
         },
         "template": {
           "metadata": {

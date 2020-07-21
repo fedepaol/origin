@@ -14,24 +14,24 @@ import (
 	buildv1 "github.com/openshift/api/build/v1"
 	eximages "github.com/openshift/origin/test/extended/images"
 	exutil "github.com/openshift/origin/test/extended/util"
+	"github.com/openshift/origin/test/extended/util/image"
 )
 
 var _ = g.Describe("[sig-builds][Feature:Builds] Multi-stage image builds", func() {
 	defer g.GinkgoRecover()
 	var (
 		oc             = exutil.NewCLI("build-multistage")
-		testDockerfile = `
+		testDockerfile = fmt.Sprintf(`
 FROM scratch as test
 USER 1001
-FROM image-registry.openshift-image-registry.svc:5000/openshift/cli:latest as other
+FROM %[1]s as other
 COPY --from=test /usr/bin/curl /test/
-COPY --from=image-registry.openshift-image-registry.svc:5000/openshift/tools:latest /bin/echo /test/
-COPY --from=image-registry.openshift-image-registry.svc:5000/openshift/tools:latest /bin/ping /test/
-`
+COPY --from=%[2]s /bin/echo /test/
+COPY --from=%[2]s /bin/ping /test/
+`, image.LimitedShellImage(), image.ShellImage())
 	)
 
 	g.Context("", func() {
-
 		g.AfterEach(func() {
 			if g.CurrentGinkgoTestDescription().Failed {
 				exutil.DumpPodStates(oc)
@@ -54,7 +54,7 @@ COPY --from=image-registry.openshift-image-registry.svc:5000/openshift/tools:lat
 						Source: buildv1.BuildSource{
 							Dockerfile: &testDockerfile,
 							Images: []buildv1.ImageSource{
-								{From: corev1.ObjectReference{Kind: "DockerImage", Name: "image-registry.openshift-image-registry.svc:5000/openshift/tools:latest"}, As: []string{"scratch"}},
+								{From: corev1.ObjectReference{Kind: "DockerImage", Name: image.ShellImage()}, As: []string{"scratch"}},
 							},
 						},
 						Strategy: buildv1.BuildStrategy{
@@ -81,8 +81,8 @@ COPY --from=image-registry.openshift-image-registry.svc:5000/openshift/tools:lat
 			s, err := result.Logs()
 			o.Expect(err).NotTo(o.HaveOccurred())
 			o.Expect(s).ToNot(o.ContainSubstring("--> FROM scratch"))
-			o.Expect(s).To(o.ContainSubstring("FROM image-registry.openshift-image-registry.svc:5000/openshift/cli:latest AS other"))
-			o.Expect(s).To(o.ContainSubstring("STEP 1: FROM image-registry.openshift-image-registry.svc:5000/openshift/tools:latest AS test"))
+			o.Expect(s).To(o.ContainSubstring(fmt.Sprintf("FROM %s AS other", image.LimitedShellImage())))
+			o.Expect(s).To(o.ContainSubstring(fmt.Sprintf("STEP 1: FROM %s AS test", image.ShellImage())))
 			o.Expect(s).To(o.ContainSubstring("COPY --from"))
 			o.Expect(s).To(o.ContainSubstring(fmt.Sprintf("\"OPENSHIFT_BUILD_NAMESPACE\"=\"%s\"", oc.Namespace())))
 			e2e.Logf("Build logs:\n%s", result)
