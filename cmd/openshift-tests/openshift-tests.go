@@ -216,6 +216,7 @@ func newRunCommand() *cobra.Command {
 				if !opt.DryRun {
 					fmt.Fprintf(os.Stderr, "%s version: %s\n", filepath.Base(os.Args[0]), version.Get().String())
 				}
+
 				if err := verifyImages(); err != nil {
 					return err
 				}
@@ -341,6 +342,8 @@ func newRunTestCommand() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			injectMirroredRepoForDocker()
+
 			if err := verifyImagesWithoutEnv(); err != nil {
 				return err
 			}

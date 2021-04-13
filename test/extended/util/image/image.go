@@ -38,10 +38,10 @@ func init() {
 
 		// allowed upstream kube images - index and value must match upstream or
 		// tests will fail
-		"k8s.gcr.io/e2e-test-images/agnhost:2.20": 1,
-		"docker.io/library/nginx:1.14-alpine":     23,
-		"docker.io/library/nginx:1.15-alpine":     24,
-		"docker.io/library/redis:5.0.5-alpine":    31,
+		"k8s.gcr.io/e2e-test-images/agnhost:2.20": 0,
+		"docker.io/library/nginx:1.14-alpine":     22,
+		"docker.io/library/nginx:1.15-alpine":     23,
+		"docker.io/library/redis:5.0.5-alpine":    30,
 	}
 
 	images = GetMappedImages(allowedImages, os.Getenv("KUBE_TEST_REPO"))
@@ -180,10 +180,11 @@ func GetMappedImages(originalImages map[string]int, repo string) map[string]stri
 		// shorten and make the pull spec "safe" so it will fit in the tag
 		h.Reset()
 		h.Write([]byte(pullSpec))
-		hash := base64.RawURLEncoding.EncodeToString(h.Sum(nil))[:hashLength]
+		hash := base64.RawURLEncoding.EncodeToString(h.Sum(nil)[:16])
+
 		shortName := reCharSafe.ReplaceAllLiteralString(pullSpec, "-")
 		shortName = reDashes.ReplaceAllLiteralString(shortName, "-")
-		maxLength := maxTagLength - hashLength - tagFormatCharacters
+		maxLength := 127 - 16 - 6 - 10
 		if len(shortName) > maxLength {
 			shortName = shortName[len(shortName)-maxLength:]
 		}

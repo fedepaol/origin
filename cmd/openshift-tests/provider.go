@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -76,82 +75,5 @@ func initializeTestFramework(context *e2e.TestContextType, config *exutilcloud.C
 }
 
 func decodeProvider(provider string, dryRun, discover bool) (*exutilcloud.ClusterConfiguration, error) {
-	switch provider {
-	case "":
-		if _, ok := os.LookupEnv("KUBE_SSH_USER"); ok {
-			if _, ok := os.LookupEnv("LOCAL_SSH_KEY"); ok {
-				return &exutilcloud.ClusterConfiguration{ProviderName: "local"}, nil
-			}
-		}
-		if dryRun {
-			return &exutilcloud.ClusterConfiguration{ProviderName: "skeleton"}, nil
-		}
-		fallthrough
-
-	case "azure", "aws", "gce", "vsphere":
-		clientConfig, err := e2e.LoadConfig(true)
-		if err != nil {
-			return nil, err
-		}
-		config, err := exutilcloud.LoadConfig(clientConfig)
-		if err != nil {
-			return nil, err
-		}
-		if len(config.ProviderName) == 0 {
-			config.ProviderName = "skeleton"
-		}
-		return config, nil
-
-	default:
-		var providerInfo struct{ Type string }
-		if err := json.Unmarshal([]byte(provider), &providerInfo); err != nil {
-			return nil, fmt.Errorf("provider must be a JSON object with the 'type' key at a minimum: %v", err)
-		}
-		if len(providerInfo.Type) == 0 {
-			return nil, fmt.Errorf("provider must be a JSON object with the 'type' key")
-		}
-		var cloudConfig e2e.CloudConfig
-		if err := json.Unmarshal([]byte(provider), &cloudConfig); err != nil {
-			return nil, fmt.Errorf("provider must decode into the cloud config object: %v", err)
-		}
-
-		// attempt to load the default config, then overwrite with any values from the passed
-		// object that can be overriden
-		var config *exutilcloud.ClusterConfiguration
-		if discover {
-			if clientConfig, err := e2e.LoadConfig(true); err == nil {
-				config, _ = exutilcloud.LoadConfig(clientConfig)
-			}
-		}
-		if config == nil {
-			config = &exutilcloud.ClusterConfiguration{
-				ProviderName: providerInfo.Type,
-				ProjectID:    cloudConfig.ProjectID,
-				Region:       cloudConfig.Region,
-				Zone:         cloudConfig.Zone,
-				NumNodes:     cloudConfig.NumNodes,
-				MultiMaster:  cloudConfig.MultiMaster,
-				MultiZone:    cloudConfig.MultiZone,
-				ConfigFile:   cloudConfig.ConfigFile,
-			}
-		} else {
-			config.ProviderName = providerInfo.Type
-			if len(cloudConfig.ProjectID) > 0 {
-				config.ProjectID = cloudConfig.ProjectID
-			}
-			if len(cloudConfig.Region) > 0 {
-				config.Region = cloudConfig.Region
-			}
-			if len(cloudConfig.Zone) > 0 {
-				config.Zone = cloudConfig.Zone
-			}
-			if len(cloudConfig.ConfigFile) > 0 {
-				config.ConfigFile = cloudConfig.ConfigFile
-			}
-			if cloudConfig.NumNodes > 0 {
-				config.NumNodes = cloudConfig.NumNodes
-			}
-		}
-		return config, nil
-	}
+	return &exutilcloud.ClusterConfiguration{ProviderName: "local"}, nil
 }

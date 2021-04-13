@@ -22,6 +22,7 @@ import (
 	"github.com/openshift/origin/pkg/test/ginkgo"
 	"github.com/openshift/origin/test/extended/util/image"
 
+	"k8s.io/kubernetes/test/e2e/framework"
 	e2e "k8s.io/kubernetes/test/e2e/framework"
 	k8simage "k8s.io/kubernetes/test/utils/image"
 )
@@ -42,6 +43,25 @@ import (
 
 // defaultTestImageMirrorLocation is where all Kube test inputs are sourced.
 const defaultTestImageMirrorLocation = "quay.io/openshift/community-e2e-images"
+
+func injectMirroredRepoForDocker() {
+	k8sImages := k8simage.GetImageConfigs()
+	for _, idx := range []int{
+		k8simage.BusyBox,
+		k8simage.Httpd,
+		k8simage.HttpdNew,
+		k8simage.Nginx,
+		k8simage.NginxNew,
+		k8simage.Perl,
+		k8simage.Redis,
+	} {
+		fmt.Println("FEDE mapping", idx)
+		k8sImages[idx] = getRepositoryMappedConfig(idx, k8sImages[idx], defaultTestImageMirrorLocation)
+	}
+	fmt.Println("FEDEAAA", k8simage.GetE2EImage(k8simage.BusyBox))
+	framework.BusyBoxImage = k8simage.GetE2EImage(k8simage.BusyBox)
+	framework.ServeHostnameImage = k8simage.GetE2EImage(k8simage.Agnhost)
+}
 
 // createImageMirrorForInternalImages returns a list of 'oc image mirror' mappings from source to
 // target or returns an error. If mirrored is true the images are assumed to have already been copied
@@ -148,19 +168,23 @@ func verifyImages() error {
 }
 
 func verifyImagesWithoutEnv() error {
-	defaults := k8simage.GetImageConfigs()
-
 	for originalPullSpec, index := range image.OriginalImages() {
 		if index == -1 {
 			continue
 		}
-		existing, ok := defaults[index]
-		if !ok {
-			return fmt.Errorf("image %q not found in upstream images, must be moved to test/extended/util/image", originalPullSpec)
+		// we check only for overridden images (i.e. the docker based ones)
+		switch index {
+		case k8simage.BusyBox:
+		case k8simage.Httpd:
+		case k8simage.HttpdNew:
+		case k8simage.Nginx:
+		case k8simage.NginxNew:
+		case k8simage.Perl:
+		case k8simage.Redis:
+		default:
+			continue
 		}
-		if existing.GetE2EImage() != originalPullSpec {
-			return fmt.Errorf("image %q defines index %d but is defined upstream as %q, must be fixed in test/extended/util/image", originalPullSpec, index, existing.GetE2EImage())
-		}
+
 		mirror := image.LocationFor(originalPullSpec)
 		upstreamMirror := k8simage.GetE2EImage(index)
 		if mirror != upstreamMirror {
